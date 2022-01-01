@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 
 import json
-import requests
 from collections import defaultdict
 from dataclasses import dataclass
 from urllib.parse import urlparse, parse_qs
 import isodate
 from tqdm import tqdm
 from argparse import ArgumentParser
+import googleapiclient.discovery
 
 
 @dataclass
 class YoutubeRewind:
-    YOUTUBE_API_URL = 'https://www.googleapis.com/youtube/v3/videos'
+    API_SERVICE_NAME = 'youtube'
+    API_VERSION = 'v3'
     year: str
     watch_history: list[dict]
     api_key: str
+
+    def __post_init__(self):
+        self.youtube = googleapiclient.discovery.build(
+            self.API_SERVICE_NAME, self.API_VERSION, developerKey=self.api_key)
 
     def run(self) -> None:
         results = defaultdict(int)
@@ -27,11 +32,11 @@ class YoutubeRewind:
         self.print_stats(results)
 
     def get_video_length(self, url: str) -> int:
-        data = requests.get(self.YOUTUBE_API_URL, params={
-            'id': self.get_video_id(url),
-            'key': self.api_key,
-            'part': 'contentDetails'
-        }).json()
+        request = self.youtube.videos().list(
+            part="contentDetails",
+            id=self.get_video_id(url)
+        )
+        data = request.execute()
         try:
             duration = data['items'][0]['contentDetails']['duration']
             duration = isodate.parse_duration(duration)
@@ -54,7 +59,7 @@ class YoutubeRewind:
             print(f'{k}: {round(v/60)}')
 
         total_watch_time = round(sum(results.values()) / 60)
-        print('Sum:', total_watch_time)
+        print(f'Total watch time: {total_watch_time} minutes')
 
 
 def main():
@@ -70,7 +75,7 @@ def main():
     with open(args.api_key) as f:
         api_key = f.read()
     watch_history = json.load(open(args.data_file))
-    rewind = YoutubeRewind(args.year, watch_history[:3], api_key)
+    rewind = YoutubeRewind(args.year, watch_history[:1], api_key)
     rewind.run()
 
 
