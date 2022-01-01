@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 
 import json
+import math
+import pickle
 from collections import defaultdict
 from dataclasses import dataclass
 from urllib.parse import urlparse, parse_qs
+from itertools import zip_longest
 import isodate
 from tqdm import tqdm
 from argparse import ArgumentParser
 import googleapiclient.discovery
 
 
+def grouper(iterable, n, fillvalue=None):
+    args = [iter(iterable)] * n
+    return zip_longest(*args, fillvalue=fillvalue)
+
+
 @dataclass
 class YoutubeRewind:
     API_SERVICE_NAME = 'youtube'
     API_VERSION = 'v3'
+    VIDEOS_PER_QUERY = 50
     year: str
     watch_history: list[dict]
     api_key: str
@@ -24,32 +33,39 @@ class YoutubeRewind:
 
     def run(self) -> None:
         results = defaultdict(int)
-        for video in tqdm(self.watch_history):
-            if video['time'].startswith(self.year) and 'subtitles' in video:
-                youtuber = video['subtitles'][0]['name']
-                results[youtuber] += self.get_video_length(video['titleUrl'])
+        existing_videos = [(video['subtitles'][0]['name'], self.get_video_id(video['titleUrl']))
+                           for video in self.watch_history
+                           if video['time'].startswith(self.year) and 'subtitles' in video and 'titleUrl' in video]
+        
+        iterations = math.ceil(len(existing_videos)/self.VIDEOS_PER_QUERY)
+        for group in tqdm(grouper(existing_videos, self.VIDEOS_PER_QUERY), total=iterations):
+            video_ids = [video[1] for video in group if video]
+            videos_length = (self.get_videos_length(video_ids))
+            for (youtuber, _), video_length in zip(group, videos_length):
+                results[youtuber] += video_length
 
+        pickle.dump(results, open('results.pkl', 'wb'))
         self.print_stats(results)
 
-    def get_video_length(self, url: str) -> int:
+    def get_videos_length(self, video_ids: list[str]) -> int:
         request = self.youtube.videos().list(
             part="contentDetails",
-            id=self.get_video_id(url)
+            id=','.join(video_ids)
         )
         data = request.execute()
-        try:
-            duration = data['items'][0]['contentDetails']['duration']
+        durations = []
+        for row in data['items']:
+            duration = row['contentDetails']['duration']
             duration = isodate.parse_duration(duration)
             video_dur = duration.total_seconds()
-            return video_dur
-        except:
-            return 0
+            durations.append(video_dur)
+        return durations
 
     @staticmethod
     def get_video_id(url: str) -> str:
         parsed_url = urlparse(url)
         qs = parse_qs(parsed_url.query)
-        return qs['v']
+        return qs['v'][0]
 
     @staticmethod
     def print_stats(results: dict[str, int]) -> None:
@@ -75,7 +91,7 @@ def main():
     with open(args.api_key) as f:
         api_key = f.read()
     watch_history = json.load(open(args.data_file))
-    rewind = YoutubeRewind(args.year, watch_history[:1], api_key)
+    rewind = YoutubeRewind(args.year, watch_history, api_key)
     rewind.run()
 
 
